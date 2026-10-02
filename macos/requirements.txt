@@ -1,0 +1,7 @@
+numpy>=1.26
+sounddevice>=0.4.6
+soundfile>=0.12
+pydub>=0.25.1
+audioop-lts>=0.2.1; python_version >= "3.13"
+mutagen>=1.47
+Pillow>=10.0

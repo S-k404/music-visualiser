@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Python
+macos/.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# ESP32 / PlatformIO
+esp32/.pio/
+esp32/.venv-pio/
+esp32/.vscode/

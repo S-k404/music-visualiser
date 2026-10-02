@@ -1,0 +1,14 @@
+target-version = "py310"
+line-length = 100
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "BLE", "S", "RUF", "PYI"]
+ignore = [
+    "S101",  # assert is fine, this isn't a security-sensitive codebase
+]
+
+[lint.per-file-ignores]
+# Test fixtures shell out to ffmpeg with a fixed, non-user-controlled
+# argument list (full path already resolved) to synthesize audio -- S603
+# is a blanket "subprocess is dangerous" flag with no fix available here.
+"tests/*" = ["S603"]
