@@ -26,6 +26,34 @@ See each subproject's README for setup, hardware requirements, and usage.
 - ESP32 + SSD1306 companion build: pairs as a Bluetooth A2DP sink and shows
   a live spectrum plus scrolling track title/artist on a tiny OLED
 
+## Install
+
+Requires macOS, Python 3.10+, and [Homebrew](https://brew.sh).
+
+```bash
+# 1. Get the code
+git clone https://github.com/S-k404/music-visualiser.git
+cd music-visualiser
+
+# 2. Install ffmpeg (decodes mp3/m4a/aac/wma/opus)
+brew install ffmpeg
+
+# 3. Run it — the first run creates macos/.venv and installs dependencies
+cd macos && ./run.sh "/path/to/song-or-folder"
+```
+
+Optional — run it from anywhere as `musicvis` and save a default library:
+
+```bash
+echo 'source "'"$PWD"'/../shell-integration.zsh"' >> ~/.zshrc   # from macos/
+source ~/.zshrc
+musicvis --set-library "/path/to/your/Music"
+musicvis                      # plays your library, no path needed
+```
+
+For the ESP32 build (PlatformIO, hardware, wiring), see
+[`esp32/README.md`](esp32/README.md).
+
 ## Quick start (macOS app)
 
 ```bash
