@@ -20,7 +20,9 @@ See each subproject's README for setup, hardware requirements, and usage.
   across mp3, m4a/mp4/aac, flac, wav, aiff, ogg/oga, opus, wma
 - Synced lyrics (`.lrc`) with karaoke-style highlighting, including stacked
   multi-layer lyrics (original / romanization / translation)
-- Queue view, shuffle/repeat, and a scrollable playlist for large libraries
+- Song selector with album grouping, cursor + Enter-to-play, and a
+  scrollbar; shuffle/repeat; auto-scrolling long lyric lines; CJK-safe
+  column alignment
 - ESP32 + SSD1306 companion build: pairs as a Bluetooth A2DP sink and shows
   a live spectrum plus scrolling track title/artist on a tiny OLED
 

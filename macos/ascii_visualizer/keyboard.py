@@ -17,6 +17,16 @@ except ImportError:  # pragma: no cover - non-POSIX platform
 
 ARROW_MAP = {"A": "up", "B": "down", "C": "right", "D": "left"}
 
+# How long to wait, after seeing ESC, for the rest of an arrow-key escape
+# sequence before giving up and treating it as a lone Esc keypress. 1ms
+# (the original value) is far too tight: the two bytes almost always
+# arrive in a second read() rather than bundled with the ESC byte, and
+# anything adding a hop -- tmux, SSH, a loaded system -- routinely pushes
+# the gap past 1ms, which silently turned arrow-key presses into a quit
+# (Esc -> quit). 25ms matches common terminal/editor escape-timeout
+# defaults and is still well under human-perceptible input lag.
+_ESCAPE_SEQUENCE_TIMEOUT = 0.025
+
 
 class Keyboard:
     def __init__(self):
@@ -44,10 +54,12 @@ class Keyboard:
         ch = sys.stdin.read(1)
         if ch != "\x1b":
             return ch
-        if not select.select([sys.stdin], [], [], 0.001)[0]:
+        if not select.select([sys.stdin], [], [], _ESCAPE_SEQUENCE_TIMEOUT)[0]:
             return "esc"
         ch2 = sys.stdin.read(1)
-        if ch2 != "[" or not select.select([sys.stdin], [], [], 0.001)[0]:
+        if ch2 != "[" or not select.select(
+            [sys.stdin], [], [], _ESCAPE_SEQUENCE_TIMEOUT
+        )[0]:
             return "esc"
         ch3 = sys.stdin.read(1)
         return ARROW_MAP.get(ch3, "esc")

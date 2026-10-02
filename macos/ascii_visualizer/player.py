@@ -68,6 +68,32 @@ def build_playlist(path: str) -> list[str]:
     return files
 
 
+def _album_label(path: str) -> str:
+    return os.path.basename(os.path.dirname(path)) or "Unknown Album"
+
+
+def _build_selector_entries(playlist: list[str]) -> list[ui.QueueEntry]:
+    """Group the (already folder-sorted) playlist under album headers
+    keyed by each track's parent directory -- a real "song selector"
+    rather than one flat list, at zero extra I/O. Reading actual album
+    tags for every file would mean opening thousands of files upfront
+    just to build a list (see tags.read_tags's cost -- it also decodes
+    embedded artwork), which was already deliberately ruled out for the
+    queue view; the folder a track lives in is a free, reliable proxy
+    since library folders are organised as Artist/Album/track.
+    """
+    entries: list[ui.QueueEntry] = []
+    last_album: str | None = None
+    for i, path in enumerate(playlist):
+        album = _album_label(path)
+        if album != last_album:
+            entries.append(ui.QueueEntry(kind="album", label=album))
+            last_album = album
+        name = os.path.splitext(os.path.basename(path))[0]
+        entries.append(ui.QueueEntry(kind="track", label=name, track_index=i))
+    return entries
+
+
 class Player:
     def __init__(self, playlist: list[str], logger: logging.Logger | None = None):
         self.playlist = playlist
@@ -86,7 +112,8 @@ class Player:
         self._last_vis_w = -1
         self._history: list[int] = []
         self.logger = logger or logging.getLogger("musicvis")
-        self._queue_names = [os.path.splitext(os.path.basename(p))[0] for p in playlist]
+        self._selector_entries = _build_selector_entries(playlist)
+        self._selector_cursor = 0
 
     @property
     def mode(self) -> str:
@@ -173,6 +200,47 @@ class Player:
 
         self._advance_with_retry(pick, volume)
 
+    def play_index(self, index: int) -> None:
+        """Jump straight to a track by playlist index, used by the song
+        selector's Enter-to-play. Falls through to the next tracks
+        (wrapping) if the requested one turns out to be unplayable,
+        same as every other transport method here."""
+        if self.engine is not None and index == self.index:
+            return
+        self._history.append(self.index)
+        volume = self.engine.get_volume() if self.engine else 1.0
+        target = [index]
+
+        def pick() -> int:
+            idx = target[0]
+            target[0] = (idx + 1) % len(self.playlist)
+            return idx
+
+        self._advance_with_retry(pick, volume)
+
+    def _entry_index_for_track(self, playlist_index: int) -> int:
+        for i, entry in enumerate(self._selector_entries):
+            if entry.kind == "track" and entry.track_index == playlist_index:
+                return i
+        return 0
+
+    def _move_selector(self, delta: int) -> None:
+        track_positions = [i for i, e in enumerate(self._selector_entries) if e.kind == "track"]
+        if not track_positions:
+            return
+        try:
+            pos = track_positions.index(self._selector_cursor)
+        except ValueError:
+            pos = 0
+        pos = max(0, min(pos + delta, len(track_positions) - 1))
+        self._selector_cursor = track_positions[pos]
+
+    def _activate_selector(self) -> None:
+        entry = self._selector_entries[self._selector_cursor]
+        if entry.kind == "track" and entry.track_index is not None:
+            self.play_index(entry.track_index)
+            self.show_queue = False
+
     def run(self) -> None:
         print(f"Loading {os.path.basename(self.playlist[0])} ...", flush=True)
         self.next_track(user_initiated=False)
@@ -232,9 +300,17 @@ class Player:
         elif key == "left":
             self.engine.seek_seconds(-5)
         elif key == "up":
-            self.engine.change_volume(0.05)
+            if self.show_queue:
+                self._move_selector(-1)
+            else:
+                self.engine.change_volume(0.05)
         elif key == "down":
-            self.engine.change_volume(-0.05)
+            if self.show_queue:
+                self._move_selector(1)
+            else:
+                self.engine.change_volume(-0.05)
+        elif key in ("\r", "\n") and self.show_queue:
+            self._activate_selector()
         elif key in ("m", "M"):
             self.mode_index = (self.mode_index + 1) % len(MODES)
         elif key in ("s", "S"):
@@ -255,6 +331,7 @@ class Player:
             self.show_queue = not self.show_queue
             if self.show_queue:
                 self.show_lyrics = False
+                self._selector_cursor = self._entry_index_for_track(self.index)
         return False
 
     def _render_once(self) -> None:
@@ -296,7 +373,8 @@ class Player:
         )
 
         frame = self.renderer.render_frame(
-            layout, track_info, playback, levels, waveform_samples, self.lyrics, self._queue_names
+            layout, track_info, playback, levels, waveform_samples,
+            self.lyrics, self._selector_entries, self._selector_cursor,
         )
         sys.stdout.write(ansi.HOME + frame)
         sys.stdout.flush()

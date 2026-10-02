@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from ascii_visualizer.player import REPEAT_MODES, Player, build_playlist
+from ascii_visualizer.player import REPEAT_MODES, Player, _build_selector_entries, build_playlist
 
 
 def test_shuffle_next_index_never_repeats_immediately():
@@ -125,6 +125,80 @@ def test_advance_with_retry_skips_unplayable_tracks(monkeypatch):
     player.next_track(user_initiated=False)  # index starts at -1 -> tries 0, 1, lands on 2
 
     assert player.index == 2
+    assert player.playlist[player.index] == "good.mp3"
+
+
+def test_build_selector_entries_groups_by_parent_folder():
+    playlist = [
+        "/lib/Artist A/Album One/01 Song.flac",
+        "/lib/Artist A/Album One/02 Song.flac",
+        "/lib/Artist B/Album Two/01 Other.flac",
+    ]
+
+    entries = _build_selector_entries(playlist)
+
+    kinds = [(e.kind, e.label) for e in entries]
+    assert kinds == [
+        ("album", "Album One"),
+        ("track", "01 Song"),
+        ("track", "02 Song"),
+        ("album", "Album Two"),
+        ("track", "01 Other"),
+    ]
+    track_entries = [e for e in entries if e.kind == "track"]
+    assert [e.track_index for e in track_entries] == [0, 1, 2]
+
+
+def test_selector_navigation_skips_album_headers():
+    player = Player([
+        "/lib/Album One/a.mp3",
+        "/lib/Album One/b.mp3",
+        "/lib/Album Two/c.mp3",
+    ])
+    player._selector_cursor = player._entry_index_for_track(0)
+
+    player._move_selector(1)
+    assert player._selector_entries[player._selector_cursor].track_index == 1
+
+    player._move_selector(1)  # crosses the "Album Two" header
+    assert player._selector_entries[player._selector_cursor].track_index == 2
+
+    player._move_selector(1)  # already at the end -- stays put
+    assert player._selector_entries[player._selector_cursor].track_index == 2
+
+    player._move_selector(-5)  # clamps at the start, doesn't wrap negative
+    assert player._selector_entries[player._selector_cursor].track_index == 0
+
+
+def test_activate_selector_plays_the_track_under_the_cursor(monkeypatch):
+    player = Player(["a.mp3", "b.mp3"])
+    player.show_queue = True
+    player._selector_cursor = player._entry_index_for_track(1)
+
+    calls = []
+    monkeypatch.setattr(player, "play_index", lambda idx: calls.append(idx))
+
+    player._activate_selector()
+
+    assert calls == [1]
+    assert player.show_queue is False, "picking a track should close the selector"
+
+
+def test_play_index_falls_through_to_next_track_when_unplayable(monkeypatch):
+    player = Player(["bad.mp3", "good.mp3"])
+    player.index = 0
+
+    def fake_load_track(self, index, resume_volume=1.0):
+        if self.playlist[index] == "bad.mp3":
+            raise RuntimeError("simulated decode failure")
+        self.index = index
+        self.tags = SimpleNamespace(title=self.playlist[index])
+
+    monkeypatch.setattr(Player, "_load_track", fake_load_track)
+
+    player.play_index(0)
+
+    assert player.index == 1
     assert player.playlist[player.index] == "good.mp3"
 
 

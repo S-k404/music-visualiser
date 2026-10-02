@@ -16,7 +16,7 @@ from mutagen.flac import FLAC, Picture
 from mutagen.id3 import APIC, ID3, TALB, TIT2, TPE1, ID3NoHeaderError
 from PIL import Image
 
-from ascii_visualizer import decode, image_art, ui, visualizers
+from ascii_visualizer import ansi, decode, image_art, ui, visualizers
 from ascii_visualizer import tags as tagsmod
 from ascii_visualizer.lyrics import LyricGroup
 
@@ -304,34 +304,69 @@ def test_lyrics_mode_with_no_lyrics_shows_fallback_message():
     assert "No synced lyrics found" in frame
 
 
-def test_render_queue_marks_current_track_and_centres_window():
-    names = [f"Track {i:02d}" for i in range(50)]
+def _flat_entries(n: int) -> list[ui.QueueEntry]:
+    """A selector entry list with no album grouping, for tests that only
+    care about the track-list windowing/marking behaviour."""
+    return [ui.QueueEntry(kind="track", label=f"Track {i:02d}", track_index=i) for i in range(n)]
 
-    rows = ui.render_queue(names, current_index=25, width=30, height=10)
+
+def test_render_selector_marks_playing_and_cursor_rows():
+    entries = _flat_entries(50)
+
+    rows = ui.render_selector(entries, cursor=25, playing_index=25, width=30, height=10)
 
     assert len(rows) == 10
     current_row = next(r for r in rows if "Track 25" in r)
     assert "▶" in current_row
     other_row = next(r for r in rows if "Track 24" in r)
     assert "▶" not in other_row
-    # window should be roughly centred on the current track, not pinned
-    # to the top or bottom of the full 50-item list
-    visible_numbers = [int(r.split(".")[0].split()[-1]) for r in rows if r.strip()]
+    # window should be roughly centred on the cursor, not pinned to the
+    # top or bottom of the full 50-item list
+    visible_numbers = [int(r.split(".")[0].split()[-1]) for r in rows if "Track" in r]
     assert min(visible_numbers) > 1
     assert max(visible_numbers) < 50
 
 
-def test_render_queue_clamps_window_near_list_edges():
-    names = [f"Track {i:02d}" for i in range(5)]
+def test_render_selector_distinguishes_cursor_from_playing_track():
+    entries = _flat_entries(10)
 
-    rows = ui.render_queue(names, current_index=0, width=30, height=10)
+    rows = ui.render_selector(entries, cursor=3, playing_index=7, width=30, height=10)
+
+    cursor_row = next(r for r in rows if "Track 03" in r)
+    playing_row = next(r for r in rows if "Track 07" in r)
+    assert ansi.REVERSE in cursor_row
+    assert "▶" not in cursor_row
+    assert ansi.REVERSE not in playing_row
+    assert "▶" in playing_row
+
+
+def test_render_selector_groups_tracks_under_album_headers():
+    entries = [
+        ui.QueueEntry(kind="album", label="Album One"),
+        ui.QueueEntry(kind="track", label="Song A", track_index=0),
+        ui.QueueEntry(kind="track", label="Song B", track_index=1),
+        ui.QueueEntry(kind="album", label="Album Two"),
+        ui.QueueEntry(kind="track", label="Song C", track_index=2),
+    ]
+
+    rows = ui.render_selector(entries, cursor=1, playing_index=0, width=40, height=5)
+
+    assert any("Album One" in r for r in rows)
+    assert any("Album Two" in r for r in rows)
+    assert any("Song C" in r for r in rows)
+
+
+def test_render_selector_clamps_window_near_list_edges():
+    entries = _flat_entries(5)
+
+    rows = ui.render_selector(entries, cursor=0, playing_index=0, width=30, height=10)
 
     assert any("Track 00" in r for r in rows)
     assert len(rows) == 10  # padded with blank rows, not an error
 
 
-def test_render_queue_empty_playlist_shows_message():
-    rows = ui.render_queue([], current_index=0, width=30, height=5)
+def test_render_selector_empty_playlist_shows_message():
+    rows = ui.render_selector([], cursor=0, playing_index=0, width=30, height=5)
     assert any("Queue is empty" in r for r in rows)
 
 
@@ -347,11 +382,88 @@ def test_queue_mode_shows_in_full_frame_and_hides_visualiser():
         artwork=None, track_index=3, track_count=5,
     )
     playback = ui.PlaybackState(position_seconds=0.0, is_playing=True, volume=1.0, mode="bars+wave")
-    names = [f"Song {i}" for i in range(1, 6)]
+    entries = [ui.QueueEntry(kind="album", label="Some Album")] + [
+        ui.QueueEntry(kind="track", label=f"Song {i}", track_index=i - 1) for i in range(1, 6)
+    ]
 
     frame = ui.Renderer().render_frame(
         layout, track_info, playback, np.zeros(layout.vis_w),
-        np.zeros((2205, 1), dtype=np.float32), None, names,
+        np.zeros((2205, 1), dtype=np.float32), None, entries, 3,
     )
 
     assert "Song 3" in frame
+
+
+def test_display_width_counts_cjk_characters_as_two_columns():
+    """Plain len() undercounts CJK text by half -- the real-world bug
+    that misaligned the lyrics/selector panels whenever a line (e.g. a
+    Japanese original lyric, verified elsewhere against a real .lrc
+    file) contained wide characters."""
+    assert ui._display_width("abc") == 3
+    assert ui._display_width("半端") == 4
+    assert ui._display_width("半ab") == 4
+
+
+def test_truncate_stops_within_the_display_width_budget_for_cjk():
+    truncated = ui._truncate("半端なら KO ふわふわ", 6)
+    assert ui._display_width(truncated) <= 6
+
+
+def test_pad_center_and_pad_right_use_display_width_not_len():
+    centered = ui._pad_center("半", 5)
+    assert ui._display_width(centered) == 5
+    right = ui._pad_right("半", 5)
+    assert ui._display_width(right) == 5
+    assert right.startswith("半")
+
+
+def test_lyrics_panel_rows_stay_within_width_for_cjk_text():
+    """Regression test: before the display-width fix, a CJK current-line
+    row built with str.center(width) (len-based) would overrun its
+    column budget and desync the panel from whatever renders next to it
+    (e.g. the album art separator)."""
+    groups = [LyricGroup(0.0, ["半端なら KO ふわふわ したいならどうぞ"])]
+
+    rows = ui.render_lyrics(groups, position_seconds=0.0, width=20, height=5)
+
+    for row in rows:
+        assert ui._display_width(ui._ANSI_RE.sub("", row)) <= 20
+
+
+def test_lyric_current_line_auto_scrolls_with_playback_position():
+    """A current lyric line longer than the panel should scroll
+    automatically as the song plays -- driven purely by position, no key
+    needed -- rather than being truncated with an ellipsis."""
+    long_line = "a line that is much too long to fit in a narrow lyrics panel"
+    groups = [LyricGroup(0.0, [long_line])]
+
+    window_a = ui.render_lyrics(groups, position_seconds=0.0, width=20, height=3)
+    window_b = ui.render_lyrics(groups, position_seconds=2.0, width=20, height=3)
+
+    assert window_a != window_b, "the visible window should move as position advances"
+    for rows in (window_a, window_b):
+        assert all(ui._display_width(ui._ANSI_RE.sub("", r)) == 20 for r in rows)
+
+
+def test_lyric_marquee_starts_from_line_beginning_when_line_becomes_current():
+    """The ticker is relative to when the line became current, not
+    absolute song time -- a line starting at 90s must open at its
+    beginning (and hold briefly), not partway through its scroll."""
+    long_line = "a line that is much too long to fit in a narrow lyrics panel"
+    groups = [LyricGroup(90.0, [long_line])]
+
+    def first_row(position):
+        rows = ui.render_lyrics(groups, position_seconds=position, width=20, height=3)
+        return ui._ANSI_RE.sub("", rows[0])
+
+    assert first_row(90.0) == first_row(90.5) == long_line[:20]
+    assert first_row(93.0) != first_row(90.0)
+
+
+def test_lyric_short_current_line_does_not_scroll():
+    groups = [LyricGroup(0.0, ["short line"])]
+
+    window_a = ui.render_lyrics(groups, position_seconds=0.0, width=40, height=3)
+    window_b = ui.render_lyrics(groups, position_seconds=5.0, width=40, height=3)
+
+    assert window_a == window_b, "a line that already fits shouldn't move"

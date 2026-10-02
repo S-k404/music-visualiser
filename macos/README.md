@@ -19,10 +19,19 @@ files and renders an HD ASCII/pixel visualisation synced to playback:
   consecutive lines at the same timestamp) and shows all layers of the
   current line together, stacked, instead of scrolling past as separate
   unrelated lines.
-- **Queue view** (`t` to toggle) — a scrollable list of the whole
-  playlist, current track marked and bold, centred in the window. Useful
-  for a big library/folder where "track 1203/3846" alone doesn't tell
-  you much.
+- **Song selector** (`t` to toggle) — a scrollable list of the whole
+  playlist, grouped under album headers (by folder, so no extra tag
+  reads on a big library). Move the cursor with `↑`/`↓` (headers are
+  skipped), press `Enter` to play the highlighted track and close the
+  panel. The playing track is marked ▶ and bold, and a scrollbar shows
+  your position in a long list.
+- **Auto-scrolling lyrics** — a current lyric line wider than the panel
+  scrolls horizontally as a ticker, driven by playback position: it
+  holds briefly at the start, freezes on pause and restarts cleanly on
+  seek or on the next line. No key needed.
+- **Wide-character safe** — CJK/fullwidth text (e.g. original lyrics in
+  Japanese or Chinese) is measured in terminal columns, not characters,
+  so panels stay aligned.
 
 ## Requirements
 
@@ -78,13 +87,14 @@ python -m ascii_visualizer "/path/to/song.mp3"
 | `space`   | Play / pause        |
 | `n` / `p` | Next / previous track |
 | `←` / `→` | Seek -5s / +5s       |
-| `↑` / `↓` | Volume up / down     |
+| `↑` / `↓` | Volume up / down (move cursor while the selector is open) |
+| `Enter`   | Play the highlighted track (selector open) |
 | `m`       | Cycle visualiser mode (bars+wave / bars / wave) |
 | `s`       | Toggle shuffle      |
 | `r`       | Cycle repeat (off / all / one) |
 | `a`       | Toggle album art panel |
 | `l`       | Toggle synced lyrics panel |
-| `t`       | Toggle queue/playlist view |
+| `t`       | Toggle song selector |
 | `q` / `esc` | Quit               |
 
 ## Supported formats
