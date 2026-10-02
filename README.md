@@ -45,7 +45,7 @@ cd macos && ./run.sh "/path/to/song-or-folder"
 Optional — run it from anywhere as `musicvis` and save a default library:
 
 ```bash
-echo 'source "'"$PWD"'/../shell-integration.zsh"' >> ~/.zshrc   # from macos/
+echo 'source "/path/to/music-visualiser/shell-integration.zsh"' >> ~/.zshrc
 source ~/.zshrc
 musicvis --set-library "/path/to/your/Music"
 musicvis                      # plays your library, no path needed
