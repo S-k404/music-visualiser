@@ -10,6 +10,7 @@ ALT_SCREEN_ON = "\x1b[?1049h"
 ALT_SCREEN_OFF = "\x1b[?1049l"
 BOLD = "\x1b[1m"
 DIM = "\x1b[2m"
+REVERSE = "\x1b[7m"
 
 
 def fg(r: int, g: int, b: int) -> str:
