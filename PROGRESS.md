@@ -13,7 +13,12 @@ pixel-art album covers, FFT spectrum + braille waveform, synced lyrics
 a queue view, shuffle/repeat, a default library + `musicvis` CLI alias,
 and persistent logging to `~/.musicvis/logs/`.
 
-115/115 tests passing, `ruff` clean, CI runs both on every push.
+115/115 tests passing locally, `ruff` clean. CI runs lint + tests on every
+push, but until 2026-10-05 its test step had never actually run: bare
+`pytest` couldn't import the package, so all test modules errored at
+collection (every run on `main` was red; `python -m pytest`, which is what
+was used locally, hid it). Fixed with `macos/pytest.ini`; the first green
+macOS run is still to be confirmed on GitHub.
 
 ### Verified against the real ~4,200-file library
 - Default-library launch (`musicvis`, no args) — loads and plays.
@@ -83,6 +88,12 @@ is reverted.
   position 200 instead of 3200).
 - **Volume drifted a percent low.** `1.0 - 0.05*3` is `0.8499…`, and the
   footer truncated it to `84%`. Rounded at the source and in the display.
+
+- **CI never ran the tests.** Found from the Actions log, not locally:
+  the macOS job failed at the Test step in ~1s with `No module named
+  'ascii_visualizer'` on every test module. Added `pytest.ini`
+  (`pythonpath = .`); bare `pytest -v` from `macos/` now collects and
+  passes all 115.
 
 ### New: queue view navigation (was a known limitation)
 Scrollbar, a selection cursor (↑/↓, PgUp/PgDn, Home/End), `enter` to play
