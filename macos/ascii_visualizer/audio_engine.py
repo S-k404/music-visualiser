@@ -46,17 +46,22 @@ class AudioEngine:
             pass
 
     def _callback(self, outdata, frames, time_info, status):
+        # Read the position and advance it in one critical section. Doing it
+        # as read -> release -> write-back (as this used to) let a seek or
+        # restart from the UI thread land in the gap and then be silently
+        # overwritten with the stale `pos + frames`.
         with self._lock:
             playing = self._playing
-            pos = self._position
             volume = self._volume
+            pos = self._position
+            if playing:
+                self._position = min(pos + frames, self._n_frames)
 
         if not playing:
             outdata.fill(0)
             return
 
-        end = pos + frames
-        chunk = self._samples[pos:end]
+        chunk = self._samples[pos:pos + frames]  # read-only after construction
         n = chunk.shape[0]
         if n < frames:
             outdata[:n] = chunk * volume
@@ -64,9 +69,6 @@ class AudioEngine:
             self._reached_end.set()
         else:
             outdata[:] = chunk * volume
-
-        with self._lock:
-            self._position = min(pos + frames, self._n_frames)
 
     def toggle_pause(self) -> None:
         with self._lock:
@@ -82,7 +84,9 @@ class AudioEngine:
 
     def change_volume(self, delta: float) -> None:
         with self._lock:
-            self._volume = max(0.0, min(2.0, self._volume + delta))
+            # Round off float drift: 1.0 - 0.05*3 is 0.8499999..., which the
+            # UI used to truncate to "84%" after three presses of volume-down.
+            self._volume = round(max(0.0, min(2.0, self._volume + delta)), 2)
 
     def get_volume(self) -> float:
         with self._lock:
