@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from ascii_visualizer.player import REPEAT_MODES, Player, _build_selector_entries, build_playlist
+from ascii_visualizer.player import REPEAT_MODES, Player, build_playlist
 
 
 def test_shuffle_next_index_never_repeats_immediately():
@@ -50,6 +50,7 @@ class _StubEngine:
     def __init__(self):
         self.playing = True
         self.restarted = False
+        self.volume_changes: list[float] = []
 
     def restart(self):
         self.restarted = True
@@ -59,6 +60,9 @@ class _StubEngine:
 
     def get_volume(self):
         return 1.0
+
+    def change_volume(self, delta):
+        self.volume_changes.append(delta)
 
 
 def test_advance_on_track_end_repeat_one_restarts_same_track():
@@ -128,80 +132,6 @@ def test_advance_with_retry_skips_unplayable_tracks(monkeypatch):
     assert player.playlist[player.index] == "good.mp3"
 
 
-def test_build_selector_entries_groups_by_parent_folder():
-    playlist = [
-        "/lib/Artist A/Album One/01 Song.flac",
-        "/lib/Artist A/Album One/02 Song.flac",
-        "/lib/Artist B/Album Two/01 Other.flac",
-    ]
-
-    entries = _build_selector_entries(playlist)
-
-    kinds = [(e.kind, e.label) for e in entries]
-    assert kinds == [
-        ("album", "Album One"),
-        ("track", "01 Song"),
-        ("track", "02 Song"),
-        ("album", "Album Two"),
-        ("track", "01 Other"),
-    ]
-    track_entries = [e for e in entries if e.kind == "track"]
-    assert [e.track_index for e in track_entries] == [0, 1, 2]
-
-
-def test_selector_navigation_skips_album_headers():
-    player = Player([
-        "/lib/Album One/a.mp3",
-        "/lib/Album One/b.mp3",
-        "/lib/Album Two/c.mp3",
-    ])
-    player._selector_cursor = player._entry_index_for_track(0)
-
-    player._move_selector(1)
-    assert player._selector_entries[player._selector_cursor].track_index == 1
-
-    player._move_selector(1)  # crosses the "Album Two" header
-    assert player._selector_entries[player._selector_cursor].track_index == 2
-
-    player._move_selector(1)  # already at the end -- stays put
-    assert player._selector_entries[player._selector_cursor].track_index == 2
-
-    player._move_selector(-5)  # clamps at the start, doesn't wrap negative
-    assert player._selector_entries[player._selector_cursor].track_index == 0
-
-
-def test_activate_selector_plays_the_track_under_the_cursor(monkeypatch):
-    player = Player(["a.mp3", "b.mp3"])
-    player.show_queue = True
-    player._selector_cursor = player._entry_index_for_track(1)
-
-    calls = []
-    monkeypatch.setattr(player, "play_index", lambda idx: calls.append(idx))
-
-    player._activate_selector()
-
-    assert calls == [1]
-    assert player.show_queue is False, "picking a track should close the selector"
-
-
-def test_play_index_falls_through_to_next_track_when_unplayable(monkeypatch):
-    player = Player(["bad.mp3", "good.mp3"])
-    player.index = 0
-
-    def fake_load_track(self, index, resume_volume=1.0):
-        if self.playlist[index] == "bad.mp3":
-            raise RuntimeError("simulated decode failure")
-        self.index = index
-        self.tags = SimpleNamespace(title=self.playlist[index])
-
-    monkeypatch.setattr(Player, "_load_track", fake_load_track)
-
-    player.play_index(0)
-
-    assert player.index == 1
-    assert player.playlist[player.index] == "good.mp3"
-
-
 def test_advance_with_retry_raises_once_when_everything_fails(monkeypatch):
     player = Player(["bad_a.mp3", "bad_b.mp3"])
 
@@ -217,3 +147,169 @@ def test_advance_with_retry_raises_once_when_everything_fails(monkeypatch):
         raised = True
 
     assert raised, "an all-unplayable playlist should raise, not loop forever"
+
+
+# -- queue view navigation ---------------------------------------------------
+
+
+def _queue_player(n=30, index=5):
+    player = Player([f"{i:02d}.mp3" for i in range(n)])
+    player.index = index
+    player.engine = _StubEngine()
+    player.show_queue = True
+    return player
+
+
+def test_queue_cursor_starts_from_playing_track_and_moves_by_one():
+    player = _queue_player(index=5)
+    assert player.queue_cursor is None  # following the playing track
+
+    player._handle_key("down")
+    assert player.queue_cursor == 6
+    player._handle_key("up")
+    player._handle_key("up")
+    assert player.queue_cursor == 4
+
+
+def test_queue_cursor_clamps_at_both_ends():
+    player = _queue_player(n=10, index=0)
+    player._handle_key("up")
+    assert player.queue_cursor == 0
+    player._handle_key("end")
+    assert player.queue_cursor == 9
+    player._handle_key("down")
+    assert player.queue_cursor == 9
+    player._handle_key("home")
+    assert player.queue_cursor == 0
+
+
+def test_queue_page_keys_move_by_a_page_and_clamp():
+    player = _queue_player(n=100, index=50)
+    player._queue_page = 12
+
+    player._handle_key("pagedown")
+    assert player.queue_cursor == 62
+    player._handle_key("pageup")
+    player._handle_key("pageup")
+    assert player.queue_cursor == 38
+    for _ in range(10):
+        player._handle_key("pageup")
+    assert player.queue_cursor == 0
+
+
+def test_queue_arrows_move_cursor_instead_of_changing_volume():
+    player = _queue_player()
+    player._handle_key("up")
+    player._handle_key("down")
+    assert player.engine.volume_changes == []
+
+
+def test_volume_keys_still_work_inside_queue_view():
+    player = _queue_player()
+    player._handle_key("+")
+    player._handle_key("-")
+    assert player.engine.volume_changes == [0.05, -0.05]
+
+
+def test_arrows_change_volume_when_queue_is_closed():
+    player = _queue_player()
+    player.show_queue = False
+    player._handle_key("up")
+    player._handle_key("down")
+    assert player.engine.volume_changes == [0.05, -0.05]
+    assert player.queue_cursor is None
+
+
+def test_enter_plays_the_selected_track_and_resumes_following(monkeypatch):
+    player = _queue_player(index=5)
+    jumped = []
+    monkeypatch.setattr(player, "jump_to", jumped.append)
+
+    for _ in range(3):
+        player._handle_key("down")
+    player._handle_key("enter")
+
+    assert jumped == [8]
+    assert player.queue_cursor is None
+
+
+def test_enter_without_browsing_does_nothing(monkeypatch):
+    player = _queue_player()
+    jumped = []
+    monkeypatch.setattr(player, "jump_to", jumped.append)
+    player._handle_key("enter")
+    assert jumped == []
+
+
+def test_toggling_queue_resets_the_cursor():
+    player = _queue_player()
+    player._handle_key("down")
+    assert player.queue_cursor is not None
+    player._handle_key("t")  # close
+    assert player.queue_cursor is None
+    player._handle_key("t")  # reopen
+    assert player.queue_cursor is None
+
+
+def test_navigation_keys_are_inert_when_queue_is_closed():
+    player = _queue_player()
+    player.show_queue = False
+    for key in ("pagedown", "pageup", "home", "end", "enter"):
+        assert player._handle_key(key) is False
+    assert player.queue_cursor is None  # navigation only acts inside the queue view
+
+
+def test_unknown_keys_are_ignored_and_never_quit():
+    player = _queue_player()
+    assert player._handle_key("unknown") is False
+    assert player._handle_key("enter") is False
+
+
+def test_jump_to_plays_target_and_records_history(monkeypatch):
+    player = Player([f"{i}.mp3" for i in range(10)])
+    player.index = 2
+    loaded = []
+
+    def fake_load_track(self, index, resume_volume=1.0):
+        loaded.append(index)
+        self.index = index
+        self.tags = SimpleNamespace(title=str(index))
+
+    monkeypatch.setattr(Player, "_load_track", fake_load_track)
+
+    player.jump_to(7)
+
+    assert loaded == [7]
+    assert player.index == 7
+    assert player._history == [2]  # 'p' can step back to where we were
+
+
+def test_jump_to_unplayable_target_carries_on_forward_not_retrying_it(monkeypatch):
+    player = Player([f"{i}.mp3" for i in range(6)])
+    player.index = 0
+    attempts = []
+
+    def fake_load_track(self, index, resume_volume=1.0):
+        attempts.append(index)
+        if index in (3, 4):
+            raise RuntimeError("corrupt")
+        self.index = index
+        self.tags = SimpleNamespace(title=str(index))
+
+    monkeypatch.setattr(Player, "_load_track", fake_load_track)
+
+    player.jump_to(3)
+
+    assert attempts == [3, 4, 5]  # each bad file tried once, then moved on
+    assert player.index == 5
+
+
+def test_queue_album_labels_come_from_each_tracks_folder():
+    player = Player([
+        "/lib/Artist A/Album One/01 Song.flac",
+        "/lib/Artist A/Album One/02 Song.flac",
+        "/lib/Artist B/Album Two/01 Other.flac",
+    ])
+
+    assert player._queue_albums == ["Album One", "Album One", "Album Two"]
+    assert player._queue_names == ["01 Song", "02 Song", "01 Other"]

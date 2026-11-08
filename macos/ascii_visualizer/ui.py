@@ -22,39 +22,6 @@ HEADER_LINES = 4
 FOOTER_LINES = 3
 
 
-@lru_cache(maxsize=4096)
-def _char_width(ch: str) -> int:
-    """Terminal display width of one character: 0 for combining marks, 2
-    for East-Asian "wide"/"fullwidth" characters, 1 for everything else.
-
-    Plain `len()` undercounts real display width for CJK text (each
-    character occupies two terminal columns, not one) -- the lyrics
-    panel explicitly supports CJK original lines alongside a
-    romanization/translation, so every width/truncate/pad computation
-    in this module has to go through this instead of `len()`, or CJK
-    lines silently overflow their column budget and wreck the layout
-    (misaligned separators, ragged panel edges, or -- in the final
-    safety-net truncate -- chopping into a neighbouring panel).
-    """
-    if unicodedata.combining(ch):
-        return 0
-    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
-
-
-def _display_width(s: str) -> int:
-    return sum(_char_width(c) for c in s)
-
-
-def _pad_right(s: str, width: int) -> str:
-    return s + " " * max(width - _display_width(s), 0)
-
-
-def _pad_center(s: str, width: int) -> str:
-    total_pad = max(width - _display_width(s), 0)
-    left = total_pad // 2
-    return " " * left + s + " " * (total_pad - left)
-
-
 @dataclass
 class TrackInfo:
     title: str
@@ -140,12 +107,43 @@ def compute_layout(
     )
 
 
+@lru_cache(maxsize=4096)
+def _char_width(ch: str) -> int:
+    """Terminal columns a character occupies: 0 for combining marks and
+    format characters (e.g. zero-width joiner), 2 for East Asian wide /
+    fullwidth characters (CJK, kana, hangul, most emoji), else 1.
+
+    Stdlib-only approximation of wcwidth -- good for the CJK titles and
+    lyrics this app actually meets, without adding a dependency.
+    """
+    if unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def display_width(s: str) -> int:
+    """Width of plain text (no ANSI codes) in terminal columns."""
+    return sum(_char_width(ch) for ch in s)
+
+
+def _visible_width(s: str) -> int:
+    """Width of a styled line in terminal columns, ignoring escape codes."""
+    return display_width(_ANSI_RE.sub("", s))
+
+
+def _sanitize(s: str) -> str:
+    """Replace control characters (a stray newline or tab in a media tag
+    or lyric line) with spaces -- left alone they'd break the line grid."""
+    return "".join(" " if unicodedata.category(ch) == "Cc" else ch for ch in s)
+
+
 def _truncate(s: str, width: int) -> str:
-    """Truncate plain text (no ANSI codes) to at most `width` display
-    *columns* -- not codepoints, so a wide (CJK) character counts as 2."""
+    """Truncate plain text (no ANSI codes) to at most `width` terminal
+    columns, ending in an ellipsis when anything was cut."""
     if width <= 0:
         return ""
-    if _display_width(s) <= width:
+    s = _sanitize(s)
+    if display_width(s) <= width:
         return s
     budget = width - 1 if width > 1 else width
     out = []
@@ -161,45 +159,52 @@ def _truncate(s: str, width: int) -> str:
     return "".join(out)
 
 
-def _truncate_visible(s: str, width: int) -> str:
-    """Truncate a fully-styled (ANSI-coloured) line to `width` *visible
-    display columns*, counting only non-escape-code characters toward
-    the budget (at their real terminal width, wide CJK glyphs counting
-    as 2) and never cutting inside an escape sequence.
+def _pad(s: str, width: int) -> str:
+    """Left-justify plain text to `width` columns (str.ljust counts
+    characters, which is wrong for double-width text)."""
+    return s + " " * max(width - display_width(s), 0)
 
-    A plain len()-based truncate is wrong here for two independent
-    reasons: a single pixel-art row can carry thousands of bytes of
-    colour codes for only a few dozen visible characters (truncating on
-    raw length chops the line far short of its actual on-screen width,
-    discarding e.g. the entire spectrum/waveform panel next to the
-    album art); and codepoint-counting undercounts any wide CJK text
-    (lyrics, tags) by half, overrunning the budget instead of stopping
-    at it. Both would otherwise land mid escape-sequence or mid-panel
-    and render as garbage/misalignment on screen.
+
+def _center(s: str, width: int) -> str:
+    gap = max(width - display_width(s), 0)
+    left = gap // 2
+    return " " * left + s + " " * (gap - left)
+
+
+def _truncate_visible(s: str, width: int) -> str:
+    """Truncate a fully-styled (ANSI-coloured) line to `width` *visible*
+    terminal columns, counting only non-escape-code characters toward the
+    budget and never cutting inside an escape sequence.
+
+    A plain len()-based truncate is wrong here: a single pixel-art row
+    can carry thousands of bytes of colour codes for only a few dozen
+    visible characters, so truncating on raw length chops the line far
+    short of its actual on-screen width -- discarding everything after
+    the first heavily-coloured segment (e.g. the entire spectrum/
+    waveform panel next to the album art) and sometimes cutting mid
+    escape-sequence, which renders as garbage on screen.
     """
     if width <= 0:
         return ""
-    plain = _ANSI_RE.sub("", s)
-    if _display_width(plain) <= width:
+    if _visible_width(s) <= width:
         return s
 
     budget = max(width - 1, 0) if width > 1 else width
     out = []
-    visible_width = 0
+    used = 0
     i = 0
     n = len(s)
-    while i < n and visible_width < budget:
+    while i < n:
         m = _ANSI_RE.match(s, i)
         if m:
             out.append(m.group())
             i = m.end()
             continue
-        ch = s[i]
-        w = _char_width(ch)
-        if visible_width + w > budget:
+        w = _char_width(s[i])
+        if used + w > budget:
             break
-        out.append(ch)
-        visible_width += w
+        out.append(s[i])
+        used += w
         i += 1
     if width > 1:
         out.append("…")
@@ -207,22 +212,19 @@ def _truncate_visible(s: str, width: int) -> str:
     return "".join(out)
 
 
-def _pad_visible(s: str, width: int) -> str:
-    """Pad a (possibly ANSI-styled) line with trailing spaces out to
-    `width` display columns, measuring only the non-escape-code
-    characters.
+def _fit_line(s: str, cols: int) -> str:
+    """Make a styled line exactly `cols` columns: truncate if too long,
+    pad with spaces if short.
 
-    The player repaints each frame with a cursor-home + overwrite (no
-    screen clear, to stay flicker-free), so a line that's shorter than
-    the previous frame's line at that row leaves stale characters from
-    the old, longer line sitting on screen past the new text -- e.g.
-    toggling the queue panel swaps the long keybindings footer for a
-    short one and the tail of the old footer stayed visible. Every line
-    has to be padded to the full row width, not just truncated, so a
-    shorter line always overwrites the old one completely.
+    The padding is what stops leftovers: frames are drawn over the
+    previous one without clearing the screen (that flickers), so any
+    column a line doesn't explicitly overwrite keeps whatever the last
+    frame put there -- e.g. a short title after a long one came out as
+    "Short" + the tail of the old title.
     """
-    plain = _ANSI_RE.sub("", s)
-    return s + " " * max(width - _display_width(plain), 0)
+    s = _truncate_visible(s, cols)
+    short = cols - _visible_width(s)
+    return s + ansi.RESET + " " * short if short > 0 else s
 
 
 def _format_time(seconds: float) -> str:
@@ -247,10 +249,9 @@ _MARQUEE_HOLD_SECONDS = 1.5  # pause at the start so the line can be read first
 
 
 def _slice_display(s: str, start_col: int, width: int) -> str:
-    """Substring of `s` covering display columns [start_col, start_col +
-    width), used to window into a doubled-up marquee string. Always
-    returns exactly `width` columns (right-padded) so the caller never
-    has to special-case a wide character landing on the boundary."""
+    """Substring of `s` covering columns [start_col, start_col + width),
+    padded to exactly `width` columns so a wide character landing on the
+    boundary needs no special case."""
     out = []
     col = 0
     used = 0
@@ -264,25 +265,20 @@ def _slice_display(s: str, start_col: int, width: int) -> str:
         out.append(ch)
         used += w
         col += w
-    return _pad_right("".join(out), width)
+    return _pad("".join(out), width)
 
 
 def _marquee_window(text: str, width: int, position_seconds: float) -> tuple[str, bool]:
-    """A horizontally auto-scrolling window into `text` when it's wider
-    than `width`, advancing with playback position (`position_seconds` is
-    time since the line became current, so it always starts at its
-    beginning after a short hold) -- so a long current
-    lyric line scrolls on its own as the song plays (no key needed,
-    freezes with playback on pause, resets cleanly on seek) instead of
-    just being truncated with an ellipsis. Returns (text_or_window,
-    is_scrolling); when it already fits, the plain text is returned
-    unchanged so the caller can still centre it."""
-    if width <= 0 or _display_width(text) <= width:
+    """A window into `text` that scrolls sideways when it's wider than
+    `width`. `position_seconds` is playback time since the line became
+    current, so the ticker starts at the line's beginning after a short
+    hold, freezes on pause and resets on seek. Returns (text, scrolling);
+    text that already fits comes back unchanged so it can be centred."""
+    if width <= 0 or display_width(text) <= width:
         return text, False
     loop_text = text + _MARQUEE_SEPARATOR
-    loop_width = _display_width(loop_text)
     scrolled = max(position_seconds - _MARQUEE_HOLD_SECONDS, 0.0)
-    offset = int(scrolled * _MARQUEE_COLS_PER_SEC) % loop_width
+    offset = int(scrolled * _MARQUEE_COLS_PER_SEC) % display_width(loop_text)
     return _slice_display(loop_text + loop_text, offset, width), True
 
 
@@ -292,10 +288,10 @@ def _styled_lyric_row(
     if not text:
         return " " * width
     if marquee_position is not None:
-        window, scrolling = _marquee_window(text, width, marquee_position)
-        body = window if scrolling else _pad_center(window, width)
+        window, scrolling = _marquee_window(_sanitize(text), width, marquee_position)
+        body = window if scrolling else _center(window, width)
     else:
-        body = _pad_center(_truncate(text, width), width)
+        body = _center(_truncate(text, width), width)
     return f"{style}{body}{ansi.RESET}"
 
 
@@ -314,8 +310,7 @@ def render_lyrics(
 
     if not groups:
         out = [" " * width for _ in range(height)]
-        msg = _truncate("No synced lyrics found for this track", width)
-        out[height // 2] = _pad_center(msg, width)
+        out[height // 2] = _center(_truncate("No synced lyrics found for this track", width), width)
         return out
 
     current = current_group_index(groups, position_seconds)
@@ -355,90 +350,85 @@ def render_lyrics(
     return out[:height]
 
 
-@dataclass
-class QueueEntry:
-    """One row of the song selector: either an album header (a grouping
-    label only, not selectable) or a playable track."""
-
-    kind: str  # "album" or "track"
-    label: str
-    track_index: int | None = None  # index into the playlist, for "track" entries
-
-
-def _album_header_row(label: str, width: int) -> str:
-    text = f" {label} "
-    text = _truncate(text, width)
-    pad = max(width - _display_width(text), 0)
-    left = pad // 2
-    line = "─" * left + text + "─" * (pad - left)
-    return f"{ansi.BOLD}{line}{ansi.RESET}"
+def _queue_scrollbar(n: int, top: int, height: int) -> list[str]:
+    """One glyph per row: a thumb sized and positioned to show which slice
+    of the `n`-entry list the `height`-row window is looking at."""
+    thumb = max(1, round(height * height / n))
+    span = max(n - height, 1)
+    thumb_top = round(top / span * (height - thumb))
+    return [
+        "┃" if thumb_top <= row < thumb_top + thumb else f"{ansi.DIM}│{ansi.RESET}"
+        for row in range(height)
+    ]
 
 
-def _scrollbar_chars(n: int, top: int, height: int) -> list[str]:
-    """One thumb/track character per visible row, proportional to how
-    much of the full `n`-entry list the `height`-row window covers --
-    the queue view previously had no indication of where you were in a
-    long list beyond the names scrolling past."""
-    if n <= height:
-        return ["│"] * height
-    thumb_size = max(round(height * height / n), 1)
-    thumb_start = min(round(top * height / n), height - thumb_size)
-    return ["┃" if thumb_start <= row < thumb_start + thumb_size else "│" for row in range(height)]
-
-
-def render_selector(
-    entries: list[QueueEntry], cursor: int, playing_index: int, width: int, height: int
+def render_queue(
+    names: list[str],
+    current_index: int,
+    width: int,
+    height: int,
+    cursor_index: int | None = None,
+    albums: list[str] | None = None,
 ) -> list[str]:
-    """Song-selector panel: the playlist grouped under album headers
-    (derived from each track's parent folder), windowed and scrolled to
-    keep `cursor` in view. The playing track is bold with a ▶ marker;
-    the cursor row (the one Enter would play) is shown in reverse video,
-    combined with bold when it's also the playing track. Track labels
-    are plain filenames (no tags) -- reading tags for every track in a
-    library of thousands upfront just to list them would be slow for no
-    real benefit here; the currently-playing track already shows full
-    tag info in the header.
+    """Scrolling playlist/queue panel: a window of `height` rows with the
+    currently-playing track marked and bold, and -- once the user starts
+    browsing -- a highlighted selection cursor. The window centres on the
+    cursor, or on the playing track while there is none. A scrollbar
+    column appears when the list doesn't fit.
+
+    `albums` (one label per track) groups the list under an album header
+    wherever the label changes. Headers are display-only; the cursor and
+    indices still count tracks.
+
+    Names are plain filenames (no tags) -- reading tags for every track
+    in a library of thousands upfront just to list them would be slow
+    for no real benefit here; the currently-playing track already shows
+    full tag info in the header.
     """
     width = max(width, 1)
     height = max(height, 1)
-    n = len(entries)
+    n = len(names)
 
     if n == 0:
         out = [" " * width for _ in range(height)]
-        out[height // 2] = _pad_center(_truncate("Queue is empty", width), width)
+        out[height // 2] = _center(_truncate("Queue is empty", width), width)
         return out
 
-    top = cursor - height // 2
-    top = max(0, min(top, max(n - height, 0)))
+    # Each display row is a track index, or an album label (str) for a header.
+    rows: list[int | str] = []
+    for i in range(n):
+        if albums is not None and (i == 0 or albums[i] != albums[i - 1]):
+            rows.append(albums[i])
+        rows.append(i)
+    track_row = {idx: r for r, idx in enumerate(rows) if isinstance(idx, int)}
 
-    show_scrollbar = width >= 12
-    text_width = width - 2 if show_scrollbar else width
-    bar_chars = _scrollbar_chars(n, top, height) if show_scrollbar else [""] * height
+    focus = current_index if cursor_index is None else cursor_index
+    focus = max(0, min(focus, n - 1))
+    total = len(rows)
+    top = max(0, min(track_row[focus] - height // 2, max(total - height, 0)))
+
+    scrollbar = _queue_scrollbar(total, top, height) if total > height and width > 4 else None
+    text_w = width - 2 if scrollbar else width  # 1 col scrollbar + 1 col gap
+    num_w = len(str(n))
 
     out = []
     for row in range(height):
-        idx = top + row
-        if idx >= n:
-            out.append(" " * width)
-            continue
-        entry = entries[idx]
-        if entry.kind == "album":
-            text = _album_header_row(entry.label, text_width)
+        idx = rows[top + row] if top + row < total else None
+        if idx is None:
+            line = " " * text_w
+        elif isinstance(idx, str):
+            label = _truncate(f" {idx} ", text_w)
+            gap = max(text_w - display_width(label), 0)
+            line = f"{ansi.BOLD}{'─' * (gap // 2)}{label}{'─' * (gap - gap // 2)}{ansi.RESET}"
         else:
-            is_playing = entry.track_index == playing_index
-            is_cursor = idx == cursor
-            marker = "▶ " if is_playing else "  "
-            label = f"{marker}{entry.track_index + 1:>4}. {entry.label}"
-            body = _pad_right(_truncate(label, text_width), text_width)
-            style = ""
-            if is_cursor and is_playing:
-                style = ansi.BOLD + ansi.REVERSE
-            elif is_cursor:
-                style = ansi.REVERSE
-            elif is_playing:
-                style = ansi.BOLD
-            text = f"{style}{body}{ansi.RESET}" if style else body
-        out.append(f"{text} {bar_chars[row]}" if show_scrollbar else text)
+            marker = "▶ " if idx == current_index else "  "
+            label = f"{marker}{idx + 1:>{num_w}}. {names[idx]}"
+            line = _pad(_truncate(label, text_w), text_w)
+            if idx == cursor_index:
+                line = f"{ansi.REVERSE}{line}{ansi.RESET}"
+            elif idx == current_index:
+                line = f"{ansi.BOLD}{line}{ansi.RESET}"
+        out.append(line + " " + scrollbar[row] if scrollbar else line)
     return out
 
 
@@ -462,8 +452,9 @@ class Renderer:
         spectrum_levels: np.ndarray,
         waveform_samples: np.ndarray,
         lyrics: list[LyricGroup] | None = None,
-        selector_entries: list[QueueEntry] | None = None,
-        selector_cursor: int = 0,
+        queue_names: list[str] | None = None,
+        queue_cursor: int | None = None,
+        queue_albums: list[str] | None = None,
     ) -> str:
         cols = layout.cols
         lines: list[str] = []
@@ -502,9 +493,13 @@ class Renderer:
             else []
         )
         queue_lines = (
-            render_selector(
-                selector_entries or [], selector_cursor, track.track_index - 1,
-                layout.vis_w, layout.body_h,
+            render_queue(
+                queue_names or [],
+                track.track_index - 1,
+                layout.vis_w,
+                layout.body_h,
+                cursor_index=queue_cursor,
+                albums=queue_albums,
             )
             if layout.show_queue
             else []
@@ -528,7 +523,7 @@ class Renderer:
 
         lines.append("─" * cols)
         status = "▶ playing" if playback.is_playing else "⏸ paused"
-        vol = f"vol {int(playback.volume * 100):3d}%"
+        vol = f"vol {round(playback.volume * 100):3d}%"
         shuffle_label = "on" if playback.shuffle else "off"
         # Build the trailing status text first so the progress bar can be
         # sized to what's actually left -- it previously assumed nothing
@@ -545,13 +540,15 @@ class Renderer:
         prog = _progress_bar(playback.position_seconds, track.duration_seconds, bar_width)
         lines.append(f" {pos_s} {prog} {dur_s}   {suffix}")
         if layout.show_queue:
-            lines.append(" ↑/↓ select  ↵ play  t close  q quit")
+            selected = track.track_index if queue_cursor is None else queue_cursor + 1
+            lines.append(
+                " ↑/↓ select  pgup/pgdn page  home/end  enter play  t close  q quit"
+                f"   ({selected}/{track.track_count})"
+            )
         else:
             lines.append(
-                " space pause  n/p next/prev  ←/→ seek  ↑/↓ volume  "
+                " space pause  n/p next/prev  ←/→ seek  ↑/↓ or +/- volume  "
                 "m mode  s shuffle  r repeat  a art  l lyrics  t queue  q quit"
             )
 
-        return "\n".join(
-            _pad_visible(_truncate_visible(line, cols), cols) for line in lines
-        )
+        return "\n".join(_fit_line(line, cols) for line in lines)

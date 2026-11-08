@@ -1,7 +1,20 @@
 # Progress log
 
 Status snapshot, not a line-by-line changelog — see `git log` for that.
-Updated 2026-10-02.
+Updated 2026-10-05.
+
+## Merged with the queue browser (2026-11-09)
+
+The 2026-10-02 work below was merged onto the queue browser and keyboard
+rewrite from 2026-10-05. The queue browser's design won: `render_queue`
+with `queue_cursor` (arrows, page, home/end, enter) and the raw-fd
+`Keyboard`. From the 2026-10-02 work, album headers (now
+`render_queue(..., albums=)`, labels from `Player._queue_albums`) and the
+auto-scrolling lyric line carry over. `render_selector`, `QueueEntry`,
+`_move_selector`, `_activate_selector` and `play_index` named below no
+longer exist; their tests were ported to `render_queue` or dropped where
+the queue browser's tests already cover them. 123 tests pass, `ruff check`
+clean.
 
 ## In progress (this session, 2026-10-02)
 
@@ -113,7 +126,12 @@ pixel-art album covers, FFT spectrum + braille waveform, synced lyrics
 a queue view, shuffle/repeat, a default library + `musicvis` CLI alias,
 and persistent logging to `~/.musicvis/logs/`.
 
-40/40 tests passing, `ruff` clean, CI runs both on every push.
+115/115 tests passing locally, `ruff` clean. CI runs lint + tests on every
+push, but until 2026-10-05 its test step had never actually run: bare
+`pytest` couldn't import the package, so all test modules errored at
+collection (every run on `main` was red; `python -m pytest`, which is what
+was used locally, hid it). Fixed with `macos/pytest.ini`; the first green
+macOS run is still to be confirmed on GitHub.
 
 ### Verified against the real ~4,200-file library
 - Default-library launch (`musicvis`, no args) — loads and plays.
@@ -151,9 +169,66 @@ and persistent logging to `~/.musicvis/logs/`.
 - Shell alias broke on the literal space in "Music Visualiser" (aliases
   re-split on whitespace at invocation; switched to a function).
 
+### Second pass (2026-10-05): bugs found by reproducing them, then fixed
+Each of these was reproduced first (real pty + a terminal emulator, or a
+deterministic unit test), fixed, and then shown to fail again when the fix
+is reverted.
+- **Arrow keys quit the app.** `Keyboard` mixed `select()` on the raw fd
+  with buffered `sys.stdin.read(1)`: the first read swallowed all 3 bytes
+  of `ESC [ C` into Python's buffer, `select` then saw nothing, and the
+  arrow was reported as a lone `esc` — which is the quit key. So ←/→
+  seek and ↑/↓ volume closed the player. Fast typing also lost keys
+  (`ns` delivered `n`; the `s` waited for the next keypress). Now reads the
+  fd directly and parses sequences itself, including Home/End/PgUp/PgDn,
+  SS3-style arrows, modified arrows; unmapped keys (F-keys, Delete,
+  Alt+x) are ignored rather than read as Esc. All pending keys are
+  drained each frame so key-repeat can't build a backlog.
+- **Stale text after a track change.** Frames overwrite the last one
+  without clearing (flicker), but lines weren't padded, so a short title
+  after a long one rendered as `Hi` + the tail of the old title. Every
+  line is now fitted to exactly the terminal width, and the screen is
+  wiped once on resize.
+- **CJK / double-width text overflowed.** Truncation, centring and
+  padding all counted characters, not terminal columns, so a wide-
+  character title could run past the edge and wrap, scrolling the frame.
+  Widths now come from Unicode East Asian Width (stdlib; no new
+  dependency). Control characters in tags (a stray `\n`) are replaced
+  with spaces so they can't split a line.
+- **Seek/restart could be silently lost.** The audio callback read the
+  position, released the lock, then wrote back `pos + frames`, so a seek
+  landing in between was overwritten. Read-and-advance is now one
+  critical section (reproduced deterministically; the old code ended at
+  position 200 instead of 3200).
+- **Volume drifted a percent low.** `1.0 - 0.05*3` is `0.8499…`, and the
+  footer truncated it to `84%`. Rounded at the source and in the display.
+
+- **CI never ran the tests.** Found from the Actions log, not locally:
+  the macOS job failed at the Test step in ~1s with `No module named
+  'ascii_visualizer'` on every test module. Added `pytest.ini`
+  (`pythonpath = .`); bare `pytest -v` from `macos/` now collects and
+  passes all 115.
+
+### New: queue view navigation (was a known limitation)
+Scrollbar, a selection cursor (↑/↓, PgUp/PgDn, Home/End), `enter` to play
+the selected track, and a position indicator in the footer. `+`/`-` set
+volume while the queue is open since the arrows are taken. Moving the
+cursor never interrupts playback.
+
+### Verification, and what it does *not* cover
+Run end to end through a real pty with real keystrokes, output rendered
+through a terminal emulator and cross-checked against the app's own log:
+arrow seek, volume (burst of keys), queue open/navigate/page/home/end/
+enter, jump playback, next-track with no leftover text, unmapped keys
+ignored, clean quit — 18/18. **The container had no sound device**, so
+PortAudio's stream was replaced by a stand-in that drives the real audio
+callback in real time; actual audible output, and macOS Terminal/iTerm2
+rendering quirks (this ran on Linux), are not verified here. Worth a
+quick `musicvis` run on the Mac.
+
 ### Known limitations (real, not yet addressed)
-- Song selector has a scrollbar now, but no search/jump-to within a
-  long library.
+- No text search within a long queue (you can page/jump, not type to
+  filter).
+- Lyrics panel is plain-text only.
 - Decode still loads a full track into memory up front (fine for songs,
   not for anything hours-long).
 

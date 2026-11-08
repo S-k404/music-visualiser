@@ -19,12 +19,13 @@ files and renders an HD ASCII/pixel visualisation synced to playback:
   consecutive lines at the same timestamp) and shows all layers of the
   current line together, stacked, instead of scrolling past as separate
   unrelated lines.
-- **Song selector** (`t` to toggle) — a scrollable list of the whole
-  playlist, grouped under album headers (by folder, so no extra tag
-  reads on a big library). Move the cursor with `↑`/`↓` (headers are
-  skipped), press `Enter` to play the highlighted track and close the
-  panel. The playing track is marked ▶ and bold, and a scrollbar shows
-  your position in a long list.
+- **Queue view** (`t` to toggle) — a scrollable list of the whole
+  playlist, grouped under album headers (by folder, so no extra tag reads
+  on a big library), with a scrollbar and the current track marked and
+  bold. Browse it with the arrow / page / home / end keys and press
+  `enter` to play the selected track — useful for a big library/folder
+  where "track 1203/3846" alone doesn't tell you much. The footer shows
+  your position in the list.
 - **Auto-scrolling lyrics** — a current lyric line wider than the panel
   scrolls horizontally as a ticker, driven by playback position: it
   holds briefly at the start, freezes on pause and restarts cleanly on
@@ -87,15 +88,27 @@ python -m ascii_visualizer "/path/to/song.mp3"
 | `space`   | Play / pause        |
 | `n` / `p` | Next / previous track |
 | `←` / `→` | Seek -5s / +5s       |
-| `↑` / `↓` | Volume up / down (move cursor while the selector is open) |
-| `Enter`   | Play the highlighted track (selector open) |
+| `↑` / `↓` or `+` / `-` | Volume up / down |
 | `m`       | Cycle visualiser mode (bars+wave / bars / wave) |
 | `s`       | Toggle shuffle      |
 | `r`       | Cycle repeat (off / all / one) |
 | `a`       | Toggle album art panel |
 | `l`       | Toggle synced lyrics panel |
-| `t`       | Toggle song selector |
+| `t`       | Toggle queue/playlist view |
 | `q` / `esc` | Quit               |
+
+While the queue view is open, the arrow keys move a selection instead of
+changing the volume (use `+` / `-` for volume there):
+
+| Key       | Action              |
+|-----------|---------------------|
+| `↑` / `↓` | Move selection      |
+| `pgup` / `pgdn` | Move a page   |
+| `home` / `end` | First / last track |
+| `enter`   | Play the selected track |
+
+Moving the selection never interrupts playback, and it stays where you put
+it even as tracks auto-advance, until you press `enter` or close the view.
 
 ## Supported formats
 
@@ -151,3 +164,7 @@ CI (`.github/workflows/ci.yml`) runs both on every push.
 - The visualiser analyses the currently-audible portion of the track, not a
   separate system-audio capture, so it works for any file you point it at
   without extra virtual-audio-device setup.
+- Text is laid out by terminal *columns*, not characters, so CJK
+  (double-width) titles, filenames and lyrics truncate and align correctly.
+  Width is approximated from Unicode East Asian Width data (no extra
+  dependency); exotic emoji sequences may still be off by a column.

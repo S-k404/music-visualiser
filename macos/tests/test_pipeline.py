@@ -304,72 +304,6 @@ def test_lyrics_mode_with_no_lyrics_shows_fallback_message():
     assert "No synced lyrics found" in frame
 
 
-def _flat_entries(n: int) -> list[ui.QueueEntry]:
-    """A selector entry list with no album grouping, for tests that only
-    care about the track-list windowing/marking behaviour."""
-    return [ui.QueueEntry(kind="track", label=f"Track {i:02d}", track_index=i) for i in range(n)]
-
-
-def test_render_selector_marks_playing_and_cursor_rows():
-    entries = _flat_entries(50)
-
-    rows = ui.render_selector(entries, cursor=25, playing_index=25, width=30, height=10)
-
-    assert len(rows) == 10
-    current_row = next(r for r in rows if "Track 25" in r)
-    assert "▶" in current_row
-    other_row = next(r for r in rows if "Track 24" in r)
-    assert "▶" not in other_row
-    # window should be roughly centred on the cursor, not pinned to the
-    # top or bottom of the full 50-item list
-    visible_numbers = [int(r.split(".")[0].split()[-1]) for r in rows if "Track" in r]
-    assert min(visible_numbers) > 1
-    assert max(visible_numbers) < 50
-
-
-def test_render_selector_distinguishes_cursor_from_playing_track():
-    entries = _flat_entries(10)
-
-    rows = ui.render_selector(entries, cursor=3, playing_index=7, width=30, height=10)
-
-    cursor_row = next(r for r in rows if "Track 03" in r)
-    playing_row = next(r for r in rows if "Track 07" in r)
-    assert ansi.REVERSE in cursor_row
-    assert "▶" not in cursor_row
-    assert ansi.REVERSE not in playing_row
-    assert "▶" in playing_row
-
-
-def test_render_selector_groups_tracks_under_album_headers():
-    entries = [
-        ui.QueueEntry(kind="album", label="Album One"),
-        ui.QueueEntry(kind="track", label="Song A", track_index=0),
-        ui.QueueEntry(kind="track", label="Song B", track_index=1),
-        ui.QueueEntry(kind="album", label="Album Two"),
-        ui.QueueEntry(kind="track", label="Song C", track_index=2),
-    ]
-
-    rows = ui.render_selector(entries, cursor=1, playing_index=0, width=40, height=5)
-
-    assert any("Album One" in r for r in rows)
-    assert any("Album Two" in r for r in rows)
-    assert any("Song C" in r for r in rows)
-
-
-def test_render_selector_clamps_window_near_list_edges():
-    entries = _flat_entries(5)
-
-    rows = ui.render_selector(entries, cursor=0, playing_index=0, width=30, height=10)
-
-    assert any("Track 00" in r for r in rows)
-    assert len(rows) == 10  # padded with blank rows, not an error
-
-
-def test_render_selector_empty_playlist_shows_message():
-    rows = ui.render_selector([], cursor=0, playing_index=0, width=30, height=5)
-    assert any("Queue is empty" in r for r in rows)
-
-
 def test_queue_mode_shows_in_full_frame_and_hides_visualiser():
     layout = ui.compute_layout(120, 40, show_art=False, show_queue=True)
     assert layout.show_queue is True
@@ -382,16 +316,15 @@ def test_queue_mode_shows_in_full_frame_and_hides_visualiser():
         artwork=None, track_index=3, track_count=5,
     )
     playback = ui.PlaybackState(position_seconds=0.0, is_playing=True, volume=1.0, mode="bars+wave")
-    entries = [ui.QueueEntry(kind="album", label="Some Album")] + [
-        ui.QueueEntry(kind="track", label=f"Song {i}", track_index=i - 1) for i in range(1, 6)
-    ]
+    names = [f"Song {i}" for i in range(1, 6)]
 
     frame = ui.Renderer().render_frame(
         layout, track_info, playback, np.zeros(layout.vis_w),
-        np.zeros((2205, 1), dtype=np.float32), None, entries, 3,
+        np.zeros((2205, 1), dtype=np.float32), None, names, None, ["Some Album"] * 5,
     )
 
     assert "Song 3" in frame
+    assert "Some Album" in frame
 
 
 def test_display_width_counts_cjk_characters_as_two_columns():
@@ -399,21 +332,21 @@ def test_display_width_counts_cjk_characters_as_two_columns():
     that misaligned the lyrics/selector panels whenever a line (e.g. a
     Japanese original lyric, verified elsewhere against a real .lrc
     file) contained wide characters."""
-    assert ui._display_width("abc") == 3
-    assert ui._display_width("半端") == 4
-    assert ui._display_width("半ab") == 4
+    assert ui.display_width("abc") == 3
+    assert ui.display_width("半端") == 4
+    assert ui.display_width("半ab") == 4
 
 
 def test_truncate_stops_within_the_display_width_budget_for_cjk():
     truncated = ui._truncate("半端なら KO ふわふわ", 6)
-    assert ui._display_width(truncated) <= 6
+    assert ui.display_width(truncated) <= 6
 
 
-def test_pad_center_and_pad_right_use_display_width_not_len():
-    centered = ui._pad_center("半", 5)
-    assert ui._display_width(centered) == 5
-    right = ui._pad_right("半", 5)
-    assert ui._display_width(right) == 5
+def test_center_and_pad_use_display_width_not_len():
+    centered = ui._center("半", 5)
+    assert ui.display_width(centered) == 5
+    right = ui._pad("半", 5)
+    assert ui.display_width(right) == 5
     assert right.startswith("半")
 
 
@@ -427,7 +360,7 @@ def test_lyrics_panel_rows_stay_within_width_for_cjk_text():
     rows = ui.render_lyrics(groups, position_seconds=0.0, width=20, height=5)
 
     for row in rows:
-        assert ui._display_width(ui._ANSI_RE.sub("", row)) <= 20
+        assert ui.display_width(ui._ANSI_RE.sub("", row)) <= 20
 
 
 def test_lyric_current_line_auto_scrolls_with_playback_position():
@@ -442,7 +375,7 @@ def test_lyric_current_line_auto_scrolls_with_playback_position():
 
     assert window_a != window_b, "the visible window should move as position advances"
     for rows in (window_a, window_b):
-        assert all(ui._display_width(ui._ANSI_RE.sub("", r)) == 20 for r in rows)
+        assert all(ui.display_width(ui._ANSI_RE.sub("", r)) == 20 for r in rows)
 
 
 def test_lyric_marquee_starts_from_line_beginning_when_line_becomes_current():
@@ -467,3 +400,40 @@ def test_lyric_short_current_line_does_not_scroll():
     window_b = ui.render_lyrics(groups, position_seconds=5.0, width=40, height=3)
 
     assert window_a == window_b, "a line that already fits shouldn't move"
+
+
+def test_render_queue_cursor_is_reverse_video_and_playing_track_is_marked():
+    names = [f"Track {i:02d}" for i in range(10)]
+
+    rows = ui.render_queue(names, current_index=7, width=30, height=10, cursor_index=3)
+
+    cursor_row = next(r for r in rows if "Track 03" in r)
+    playing_row = next(r for r in rows if "Track 07" in r)
+    assert ansi.REVERSE in cursor_row
+    assert "▶" not in cursor_row
+    assert ansi.REVERSE not in playing_row
+    assert "▶" in playing_row
+
+
+def test_render_queue_groups_tracks_under_album_headers():
+    names = ["Song A", "Song B", "Song C"]
+    albums = ["Album One", "Album One", "Album Two"]
+
+    rows = ui.render_queue(names, current_index=0, width=40, height=5, albums=albums)
+    plain = [ui._ANSI_RE.sub("", r) for r in rows]
+
+    assert [r.strip(" ─") for r in plain[:5]] == [
+        "Album One", "▶ 1. Song A", "2. Song B", "Album Two", "3. Song C",
+    ]
+
+
+def test_render_queue_with_albums_keeps_the_cursor_in_view():
+    names = [f"Track {i:02d}" for i in range(40)]
+    albums = [f"Album {i // 4}" for i in range(40)]  # a header every 4 tracks
+
+    rows = ui.render_queue(
+        names, current_index=0, width=30, height=8, cursor_index=39, albums=albums
+    )
+
+    assert len(rows) == 8
+    assert any("Track 39" in r and ansi.REVERSE in r for r in rows)

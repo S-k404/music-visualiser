@@ -27,6 +27,7 @@ WAVEFORM_WINDOW_SECONDS = 0.05
 SPECTRUM_WINDOW_SAMPLES = 2048
 MODES = ["bars+wave", "bars", "wave"]
 REPEAT_MODES = ["off", "all", "one"]  # "all" is the default -- loop the playlist
+QUEUE_DEFAULT_PAGE = 10  # rows paged by pgup/pgdn until the first frame reports the real height
 
 
 def _live_terminal_size(fallback: tuple[int, int] = (100, 32)) -> tuple[int, int]:
@@ -68,32 +69,6 @@ def build_playlist(path: str) -> list[str]:
     return files
 
 
-def _album_label(path: str) -> str:
-    return os.path.basename(os.path.dirname(path)) or "Unknown Album"
-
-
-def _build_selector_entries(playlist: list[str]) -> list[ui.QueueEntry]:
-    """Group the (already folder-sorted) playlist under album headers
-    keyed by each track's parent directory -- a real "song selector"
-    rather than one flat list, at zero extra I/O. Reading actual album
-    tags for every file would mean opening thousands of files upfront
-    just to build a list (see tags.read_tags's cost -- it also decodes
-    embedded artwork), which was already deliberately ruled out for the
-    queue view; the folder a track lives in is a free, reliable proxy
-    since library folders are organised as Artist/Album/track.
-    """
-    entries: list[ui.QueueEntry] = []
-    last_album: str | None = None
-    for i, path in enumerate(playlist):
-        album = _album_label(path)
-        if album != last_album:
-            entries.append(ui.QueueEntry(kind="album", label=album))
-            last_album = album
-        name = os.path.splitext(os.path.basename(path))[0]
-        entries.append(ui.QueueEntry(kind="track", label=name, track_index=i))
-    return entries
-
-
 class Player:
     def __init__(self, playlist: list[str], logger: logging.Logger | None = None):
         self.playlist = playlist
@@ -102,6 +77,11 @@ class Player:
         self.show_art = True
         self.show_lyrics = False
         self.show_queue = False
+        # Queue-view selection. None = "not browsing": the view just follows
+        # the playing track. Set once the user moves the cursor, and held
+        # there (even as tracks auto-advance) until they play a selection
+        # or close the view.
+        self.queue_cursor: int | None = None
         self.shuffle = False
         self.repeat_index = 1  # "all"
         self.renderer = ui.Renderer()
@@ -110,10 +90,17 @@ class Player:
         self.analyzer: SpectrumAnalyzer | None = None
         self.lyrics: list[LyricGroup] = []
         self._last_vis_w = -1
+        self._last_size: tuple[int, int] | None = None
+        self._queue_page = QUEUE_DEFAULT_PAGE
         self._history: list[int] = []
         self.logger = logger or logging.getLogger("musicvis")
-        self._selector_entries = _build_selector_entries(playlist)
-        self._selector_cursor = 0
+        self._queue_names = [os.path.splitext(os.path.basename(p))[0] for p in playlist]
+        # Album headers in the queue view come from each track's folder:
+        # libraries are laid out Artist/Album/track, and reading real album
+        # tags for thousands of files upfront would be slow.
+        self._queue_albums = [
+            os.path.basename(os.path.dirname(p)) or "Unknown Album" for p in playlist
+        ]
 
     @property
     def mode(self) -> str:
@@ -192,6 +179,23 @@ class Player:
         volume = self.engine.get_volume() if self.engine else 1.0
         self._advance_with_retry(self._pick_next_index, volume)
 
+    def jump_to(self, index: int) -> None:
+        """Play playlist entry `index` (from the queue view). If it turns
+        out to be unplayable, carries on forward from there, same as any
+        other skip -- rather than retrying the same bad file."""
+        self._history.append(self.index)
+        volume = self.engine.get_volume() if self.engine else 1.0
+        first = True
+
+        def pick() -> int:
+            nonlocal first
+            if first:
+                first = False
+                return index
+            return self._pick_next_index()
+
+        self._advance_with_retry(pick, volume)
+
     def prev_track(self) -> None:
         volume = self.engine.get_volume() if self.engine else 1.0
 
@@ -199,47 +203,6 @@ class Player:
             return self._history.pop() if self._history else (self.index - 1) % len(self.playlist)
 
         self._advance_with_retry(pick, volume)
-
-    def play_index(self, index: int) -> None:
-        """Jump straight to a track by playlist index, used by the song
-        selector's Enter-to-play. Falls through to the next tracks
-        (wrapping) if the requested one turns out to be unplayable,
-        same as every other transport method here."""
-        if self.engine is not None and index == self.index:
-            return
-        self._history.append(self.index)
-        volume = self.engine.get_volume() if self.engine else 1.0
-        target = [index]
-
-        def pick() -> int:
-            idx = target[0]
-            target[0] = (idx + 1) % len(self.playlist)
-            return idx
-
-        self._advance_with_retry(pick, volume)
-
-    def _entry_index_for_track(self, playlist_index: int) -> int:
-        for i, entry in enumerate(self._selector_entries):
-            if entry.kind == "track" and entry.track_index == playlist_index:
-                return i
-        return 0
-
-    def _move_selector(self, delta: int) -> None:
-        track_positions = [i for i, e in enumerate(self._selector_entries) if e.kind == "track"]
-        if not track_positions:
-            return
-        try:
-            pos = track_positions.index(self._selector_cursor)
-        except ValueError:
-            pos = 0
-        pos = max(0, min(pos + delta, len(track_positions) - 1))
-        self._selector_cursor = track_positions[pos]
-
-    def _activate_selector(self) -> None:
-        entry = self._selector_entries[self._selector_cursor]
-        if entry.kind == "track" and entry.track_index is not None:
-            self.play_index(entry.track_index)
-            self.show_queue = False
 
     def run(self) -> None:
         print(f"Loading {os.path.basename(self.playlist[0])} ...", flush=True)
@@ -252,8 +215,15 @@ class Player:
                 while True:
                     start = time.monotonic()
                     try:
-                        key = kb.read_key()
-                        if key is not None and self._handle_key(key):
+                        # Drain everything typed since the last frame, not
+                        # one key per frame, so a held-down arrow (which
+                        # repeats faster than 30/s) can't build a backlog.
+                        quit_requested = False
+                        while (key := kb.read_key()) is not None:
+                            if self._handle_key(key):
+                                quit_requested = True
+                                break
+                        if quit_requested:
                             break
                         if self.engine.is_finished():
                             self._advance_on_track_end()
@@ -289,6 +259,8 @@ class Player:
         if key in ("q", "Q", "esc"):
             self.logger.info("quit requested by user")
             return True
+        if self.show_queue and self._handle_queue_key(key):
+            return False
         if key == " ":
             self.engine.toggle_pause()
         elif key in ("n", "N"):
@@ -299,18 +271,10 @@ class Player:
             self.engine.seek_seconds(5)
         elif key == "left":
             self.engine.seek_seconds(-5)
-        elif key == "up":
-            if self.show_queue:
-                self._move_selector(-1)
-            else:
-                self.engine.change_volume(0.05)
-        elif key == "down":
-            if self.show_queue:
-                self._move_selector(1)
-            else:
-                self.engine.change_volume(-0.05)
-        elif key in ("\r", "\n") and self.show_queue:
-            self._activate_selector()
+        elif key in ("up", "+", "="):
+            self.engine.change_volume(0.05)
+        elif key in ("down", "-", "_"):
+            self.engine.change_volume(-0.05)
         elif key in ("m", "M"):
             self.mode_index = (self.mode_index + 1) % len(MODES)
         elif key in ("s", "S"):
@@ -329,10 +293,37 @@ class Player:
                     self.logger.info("lyrics toggled on, but no .lrc file found for this track")
         elif key in ("t", "T"):
             self.show_queue = not self.show_queue
+            self.queue_cursor = None  # reopen / close always starts from the playing track
             if self.show_queue:
                 self.show_lyrics = False
-                self._selector_cursor = self._entry_index_for_track(self.index)
         return False
+
+    def _handle_queue_key(self, key: str) -> bool:
+        """Navigation while the queue view is open: arrows/page/home/end move
+        a selection cursor, Enter plays it. Returns True if `key` was one of
+        those (so up/down don't also change the volume -- `+`/`-` do that
+        here). Moving the cursor never interrupts playback."""
+        last = len(self.playlist) - 1
+        here = self.queue_cursor if self.queue_cursor is not None else max(self.index, 0)
+        if key == "enter":
+            if self.queue_cursor is not None:
+                target = self.queue_cursor
+                self.queue_cursor = None
+                self.logger.info("queue: playing track %d", target + 1)
+                self.jump_to(target)
+            return True
+        moves = {
+            "up": here - 1,
+            "down": here + 1,
+            "pageup": here - self._queue_page,
+            "pagedown": here + self._queue_page,
+            "home": 0,
+            "end": last,
+        }
+        if key not in moves:
+            return False
+        self.queue_cursor = max(0, min(moves[key], last))
+        return True
 
     def _render_once(self) -> None:
         assert self.engine is not None and self.tags is not None
@@ -341,6 +332,7 @@ class Player:
             cols, rows, mode=self.mode, show_art=self.show_art,
             show_lyrics=self.show_lyrics, show_queue=self.show_queue,
         )
+        self._queue_page = max(layout.body_h - 1, 1)
         self._ensure_analyzer(layout.vis_w)
 
         window_n = max(int(self.engine.sample_rate * WAVEFORM_WINDOW_SECONDS), 64)
@@ -373,8 +365,13 @@ class Player:
         )
 
         frame = self.renderer.render_frame(
-            layout, track_info, playback, levels, waveform_samples,
-            self.lyrics, self._selector_entries, self._selector_cursor,
+            layout, track_info, playback, levels, waveform_samples, self.lyrics,
+            self._queue_names, self.queue_cursor, self._queue_albums,
         )
-        sys.stdout.write(ansi.HOME + frame)
+        # Frames overwrite the last one in place (no per-frame clear, which
+        # flickers), so after a resize the terminal's reflowed leftovers
+        # need one explicit wipe.
+        prefix = ansi.CLEAR_SCREEN if (cols, rows) != self._last_size else ""
+        self._last_size = (cols, rows)
+        sys.stdout.write(prefix + ansi.HOME + frame)
         sys.stdout.flush()
