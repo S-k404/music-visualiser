@@ -1,3 +1,12 @@
+<!-- datasheet:banner -->
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/banner-dark.svg">
+    <img src=".github/assets/banner-light.svg" alt="Music Visualiser: Two visualisers, one project: a terminal app with live ASCII and pixel art, and ESP32 firmware that shows a spectrum on an OLED." width="100%">
+  </picture>
+</p>
+<!-- /datasheet:banner -->
+
 # Music Visualiser
 
 Two music visualisers, one project:
@@ -11,6 +20,25 @@ Two music visualisers, one project:
   title/artist on the tiny screen.
 
 See each subproject's README for setup, hardware requirements, and usage.
+
+<!-- datasheet:figure -->
+## At a glance
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/diagram-dark.svg">
+    <img src=".github/assets/diagram-light.svg" alt="Block diagram: two visualisers, one signal path" width="100%">
+  </picture>
+</p>
+
+| Characteristic | Detail |
+| --- | --- |
+| **macOS app** | Real-time HD ASCII/pixel render: true-colour half-block album art, eighth-block FFT bars, braille oscilloscope |
+| **Tags** | Title, artist, album, year, genre and embedded cover art from mp3, m4a/mp4/aac, flac, wav, aiff, ogg, opus, wma |
+| **Lyrics** | Synced `.lrc` with karaoke-style highlighting, including stacked original / romanization / translation layers |
+| **ESP32 build** | Pairs as a Bluetooth A2DP sink and shows a live spectrum plus scrolling track title on an SSD1306 OLED |
+| **CI** | Lints and tests the macOS app and compiles the ESP32 firmware on every push |
+<!-- /datasheet:figure -->
 
 ## Features
 
