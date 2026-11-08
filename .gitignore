@@ -12,3 +12,9 @@ macos/.venv/
 esp32/.pio/
 esp32/.venv-pio/
 esp32/.vscode/
+
+# AI session notes (kept locally, not published)
+CLAUDE.md
+PROGRESS.md
+PROGRESS_LOG.md
+CONTINUE-PROMPT.md
