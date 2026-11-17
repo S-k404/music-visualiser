@@ -83,9 +83,9 @@ automatically.
 
 ### Controls
 
-There's no buttons in this build — it's designed to just sit there and
-react. If you want physical controls (e.g. a button to cycle visual
-modes), that's a natural next step; say the word and it can be added.
+There are no buttons in this build: it just sits there and reacts.
+Physical controls (for example a button to cycle visual modes) are not
+implemented.
 
 ### Track metadata caveat
 
@@ -121,9 +121,8 @@ Audio" and the spectrum still works fine.
 
 ## Verified
 
-`pio run` was run against the real registry/GitHub library versions
-(ESP32-A2DP, Adafruit SSD1306/GFX/BusIO, arduinoFFT) and compiles cleanly.
-What has **not** been verified is real hardware — it hasn't been flashed
-to a physical ESP32 or paired with a phone, since that needs the board in
-hand. If `pio run --target upload` or the on-device behaviour turns up
-issues, bring them back and they can be fixed directly.
+`pio run` compiles cleanly against the real registry/GitHub library versions
+(ESP32-A2DP, Adafruit SSD1306/GFX/BusIO, arduinoFFT). What has **not** been
+verified is real hardware: it has not been flashed to a physical ESP32 or
+paired with a phone. If `pio run --target upload` or the on-device behaviour
+turns up issues, please open an issue.
