@@ -68,7 +68,9 @@ cd music-visualiser/macos && ./run.sh "/path/to/song-or-folder"   # first run cr
 
 ## Install
 
-Requires macOS, Python 3.10+ and [Homebrew](https://brew.sh).
+Requires macOS, Linux, or Windows 11, Python 3.10+, and `ffmpeg`.
+
+macOS (Homebrew):
 
 ```bash
 # 1. Get the code
@@ -81,6 +83,16 @@ brew install ffmpeg
 # 3. Run it. The first run creates macos/.venv and installs the dependencies
 cd macos && ./run.sh "/path/to/song-or-folder"
 ```
+
+Windows 11 (PowerShell / Windows Terminal):
+
+```powershell
+git clone https://github.com/S-k404/music-visualiser.git
+cd music-visualiser\macos
+.\run.ps1 "C:\Users\you\Music"     # creates .venv, installs ffmpeg via winget if missing
+```
+
+Dot-source `.\shell-integration.ps1` in your PowerShell `$PROFILE` for `musicvis` and `musicvis-esp32` commands from any directory.
 
 ### Run it from anywhere
 

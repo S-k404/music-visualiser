@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from dataclasses import dataclass
 
 import numpy as np
@@ -40,9 +41,14 @@ _SOUNDFILE_EXTENSIONS = {".flac", ".wav", ".aiff", ".aif", ".ogg", ".oga"}
 
 def check_ffmpeg_available() -> None:
     if shutil.which("ffmpeg") is None:
+        hint = (
+            "winget install Gyan.FFmpeg"
+            if sys.platform.startswith("win")
+            else "brew install ffmpeg"
+        )
         raise DecodeError(
             "ffmpeg was not found on PATH. Install it with:\n"
-            "  brew install ffmpeg"
+            f"  {hint}"
         )
 
 

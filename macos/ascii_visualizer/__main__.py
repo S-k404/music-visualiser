@@ -62,6 +62,7 @@ def main() -> None:
         sys.exit(1)
 
     logger.info("playlist built: %d track(s)", len(playlist))
+    ansi.enable_vt_console()
     player = Player(playlist, logger=logger)
     try:
         player.run()

@@ -27,6 +27,10 @@ except ImportError:  # pragma: no cover - non-POSIX platform
 ARROW_MAP = {"A": "up", "B": "down", "C": "right", "D": "left", "H": "home", "F": "end"}
 # CSI "<n>~" sequences (ESC [ 5 ~ etc.)
 TILDE_MAP = {"1": "home", "4": "end", "5": "pageup", "6": "pagedown", "7": "home", "8": "end"}
+WIN_EXT_MAP = {
+    "H": "up", "P": "down", "M": "right", "K": "left",
+    "G": "home", "O": "end", "I": "pageup", "Q": "pagedown",
+}
 
 # A recognised-but-unmapped sequence (F-keys, Delete, Alt+key, ...). Returned
 # rather than swallowed silently so callers can tell "nothing pressed" (None)
@@ -41,13 +45,24 @@ _ESC_TIMEOUT = 0.02
 
 
 class Keyboard:
-    def __init__(self, fd: int | None = None):
+    def __init__(self, fd: int | None = None, win_msvcrt=None):
         """`fd` overrides the descriptor to read (tests use a pipe); by
         default it's stdin, and only when stdin is a real TTY."""
+        self._win_msvcrt = win_msvcrt
         if fd is not None:
             self._fd: int | None = fd
             self._enabled = True
+            self._use_win_console = False
+        elif sys.platform.startswith("win") or win_msvcrt is not None:
+            self._fd = None
+            self._use_win_console = bool(win_msvcrt is not None or sys.stdin.isatty())
+            self._enabled = self._use_win_console
+            if self._use_win_console and self._win_msvcrt is None:
+                import msvcrt
+
+                self._win_msvcrt = msvcrt
         else:
+            self._use_win_console = False
             self._enabled = bool(termios) and sys.stdin.isatty()
             self._fd = sys.stdin.fileno() if self._enabled else None
         self._old_settings = None
@@ -56,7 +71,13 @@ class Keyboard:
     def __enter__(self) -> Keyboard:  # noqa: PYI034 -- typing.Self needs
         # py3.11+; this project targets 3.10, not worth a typing_extensions
         # dependency for one annotation
-        if self._enabled and self._fd is not None and termios and os.isatty(self._fd):
+        if (
+            not self._use_win_console
+            and self._enabled
+            and self._fd is not None
+            and termios
+            and os.isatty(self._fd)
+        ):
             self._old_settings = termios.tcgetattr(self._fd)
             tty.setcbreak(self._fd)
         return self
@@ -65,6 +86,20 @@ class Keyboard:
         if self._old_settings is not None and self._fd is not None:
             termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_settings)
             self._old_settings = None
+
+    def _read_win_key(self) -> str | None:
+        ms = self._win_msvcrt
+        if ms is None or not ms.kbhit():
+            return None
+        ch = ms.getwch()
+        if ch in ("\x00", "\xe0"):
+            ext = ms.getwch() if ms.kbhit() else ""
+            return WIN_EXT_MAP.get(ext, UNKNOWN)
+        if ch in ("\r", "\n"):
+            return "enter"
+        if ch == "\x1b":
+            return "esc"
+        return ch
 
     def _fill(self, timeout: float = 0.0) -> bool:
         """Pull whatever bytes are waiting on the fd into the pending
@@ -88,6 +123,8 @@ class Keyboard:
         Call repeatedly to drain everything typed since the last frame."""
         if not self._enabled:
             return None
+        if self._use_win_console:
+            return self._read_win_key()
         self._fill()
         return self._pop_key()
 
