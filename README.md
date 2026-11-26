@@ -11,7 +11,7 @@
 
 **Two visualisers, one signal path: a terminal app that paints your album art and spectrum while a song plays, and an ESP32 that shows the same idea on a tiny OLED.**
 
-- **[`macos/`](macos/)** is a terminal app for macOS. It decodes local audio files, reads full media tags and embedded artwork, and renders a real-time HD ASCII/pixel visualisation (half-block true-colour album art, braille waveform, FFT spectrum bars) in step with playback.
+- **[`macos/`](macos/)** is a terminal app for macOS, Windows 11, and Linux. It decodes local audio files, reads full media tags and embedded artwork, and renders a real-time HD ASCII/pixel visualisation (half-block true-colour album art, braille waveform, FFT spectrum bars) in step with playback.
 - **[`esp32/`](esp32/)** is ESP32 + SSD1306 OLED firmware that pairs as a Bluetooth A2DP sink and shows a live spectrum plus the scrolling track title and artist on the small screen.
 
 <!-- datasheet:figure -->
@@ -35,10 +35,20 @@
 
 ## Quick start
 
+**macOS / Linux:**
+
 ```bash
 git clone https://github.com/S-k404/music-visualiser.git
 brew install ffmpeg                                  # decodes mp3, m4a, aac, wma and opus
 cd music-visualiser/macos && ./run.sh "/path/to/song-or-folder"   # first run creates macos/.venv
+```
+
+**Windows 11 (PowerShell / Windows Terminal):**
+
+```powershell
+git clone https://github.com/S-k404/music-visualiser.git
+cd music-visualiser\macos
+.\run.ps1 "C:\Users\you\Music"                       # creates .venv, installs ffmpeg via winget if missing
 ```
 
 ## Features
@@ -96,13 +106,30 @@ Dot-source `.\shell-integration.ps1` in your PowerShell `$PROFILE` for `musicvis
 
 ### Run it from anywhere
 
-`shell-integration.zsh` defines two shell functions that work from any directory: `musicvis` (the terminal visualiser) and `musicvis-esp32` (build, upload or monitor the ESP32 firmware). Source it once from your shell rc file:
+Shell integrations define two functions that work from any directory: `musicvis` (the terminal visualiser) and `musicvis-esp32` (build, upload or monitor the ESP32 firmware).
+
+**macOS / Linux (`~/.zshrc` or `~/.bashrc`):**
 
 ```bash
 echo 'source "/path/to/music-visualiser/shell-integration.zsh"' >> ~/.zshrc
 source ~/.zshrc
 musicvis --set-library "/path/to/your/Music"   # save a default library
 musicvis                                       # plays your library, no path needed
+```
+
+**Windows 11 (PowerShell `$PROFILE`):**
+
+Add to your `$PROFILE` (e.g. `notepad $PROFILE`):
+
+```powershell
+. "C:\path\to\music-visualiser\shell-integration.ps1"
+```
+
+Then in a new PowerShell window:
+
+```powershell
+musicvis "C:\Users\you\Music"                  # play song or directory
+musicvis-esp32 build                           # build ESP32 PlatformIO firmware
 ```
 
 For the ESP32 build (PlatformIO, hardware, wiring), see [`esp32/README.md`](esp32/README.md).
@@ -125,7 +152,7 @@ musicvis-esp32 monitor
 
 | Parameter | Limit |
 |---|---|
-| Terminal app | macOS, Python 3.10 or newer, `ffmpeg` on the PATH |
+| Terminal app | macOS, Windows 11, or Linux; Python 3.10 or newer; `ffmpeg` on the PATH |
 | Seek step | 5 s per key press |
 | Volume step | 5% per key press |
 | Audio formats read | mp3, m4a/mp4/aac, flac, wav, aiff, ogg/oga, opus, wma |
